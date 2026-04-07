@@ -12,15 +12,18 @@ const db = admin.firestore();
 const app = express();
 app.use(express.json());
 
-// ✅ Configuração dos planos — edite aqui se mudar os nomes das ofertas
-const PLANOS = {
-  'ACESSO SEMANAL':   { tipo: 'semanal',   dias: 7    },
-  'ACESSO MENSAL':    { tipo: 'mensal',     dias: 30   },
-  'ACESSO VITALÍCIO': { tipo: 'vitalicio',  dias: null },
-  'mensal++':         { tipo: 'mensal',     dias: 30   },
-  'Vitalicio++':      { tipo: 'vitalicio',  dias: null },
-  'ACESSO PREMIUM':   { tipo: 'vitalicio',  dias: null },
-  'PROMOÇÃO 3':       { tipo: 'vitalicio',  dias: null },
+// ✅ Mapeamento por ID do produto (Lowify)
+// Cada produto separado na Lowify tem um ID único
+const PLANOS_POR_ID = {
+  // IDs numéricos (vêm na URL ao editar o produto)
+  '32851': { tipo: 'semanal',   dias: 7    },  // Painel Seven 7 Dias
+  '32852': { tipo: 'mensal',    dias: 30   },  // Painel Seven 30 Dias
+  '32853': { tipo: 'vitalicio', dias: null },  // Painel Seven Vitalício
+
+  // IDs alfanuméricos (aparecem no dashboard)
+  'pIVUTw': { tipo: 'semanal',   dias: 7    },  // Painel Seven 7 Dias
+  'ndsYnY': { tipo: 'mensal',    dias: 30   },  // Painel Seven 30 Dias
+  '8rT4ZU': { tipo: 'vitalicio', dias: null },  // Painel Seven Vitalício
 };
 
 function calcularExpiracao(dias) {
@@ -31,29 +34,43 @@ function calcularExpiracao(dias) {
 }
 
 function detectarPlano(body) {
-  const nomeOferta =
-    body?.offer?.name ||
-    body?.oferta?.nome ||
-    body?.offer_name ||
-    body?.produto?.oferta ||
-    body?.item?.name ||
-    '';
+  // Tenta pelo ID numérico do produto
+  const idNumerico = body?.produto?.id?.toString() || body?.product?.id?.toString() || '';
+  console.log(`ID numérico do produto: "${idNumerico}"`);
 
-  console.log(`Oferta detectada: "${nomeOferta}"`);
+  if (idNumerico && PLANOS_POR_ID[idNumerico]) {
+    const plano = PLANOS_POR_ID[idNumerico];
+    console.log(`✅ Plano detectado pelo ID numérico: ${plano.tipo}`);
+    return { ...plano };
+  }
 
-  const plano = PLANOS[nomeOferta];
-  if (plano) return { ...plano, ofertaNome: nomeOferta };
+  // Tenta pelo ID alfanumérico (campo alternativo)
+  const idAlfa = body?.produto?.code || body?.product?.code || body?.offer_id || '';
+  console.log(`ID alfanumérico do produto: "${idAlfa}"`);
 
-  // Fallback: tenta detectar pelo nome parcial
-  for (const [nome, config] of Object.entries(PLANOS)) {
-    if (nomeOferta.toLowerCase().includes(nome.toLowerCase())) {
-      return { ...config, ofertaNome: nomeOferta };
-    }
+  if (idAlfa && PLANOS_POR_ID[idAlfa]) {
+    const plano = PLANOS_POR_ID[idAlfa];
+    console.log(`✅ Plano detectado pelo ID alfanumérico: ${plano.tipo}`);
+    return { ...plano };
+  }
+
+  // Tenta pelo nome do produto como fallback
+  const nomeProduto = (body?.produto?.name || body?.product?.name || '').toLowerCase();
+  console.log(`Nome do produto: "${nomeProduto}"`);
+
+  if (nomeProduto.includes('7 dia') || nomeProduto.includes('semanal')) {
+    return { tipo: 'semanal', dias: 7 };
+  }
+  if (nomeProduto.includes('30 dia') || nomeProduto.includes('mensal')) {
+    return { tipo: 'mensal', dias: 30 };
+  }
+  if (nomeProduto.includes('vitalicio') || nomeProduto.includes('vitalício')) {
+    return { tipo: 'vitalicio', dias: null };
   }
 
   // Padrão seguro: vitalício
-  console.log(`⚠️ Oferta não mapeada: "${nomeOferta}" — aplicando vitalício por padrão`);
-  return { tipo: 'vitalicio', dias: null, ofertaNome: nomeOferta || 'desconhecida' };
+  console.log(`⚠️ Plano não detectado — aplicando vitalício por padrão`);
+  return { tipo: 'vitalicio', dias: null };
 }
 
 app.post('/webhook', async (req, res) => {
@@ -77,7 +94,8 @@ app.post('/webhook', async (req, res) => {
       eventoLower === 'venda.paga' ||
       eventoLower === 'venda.aprovada' ||
       body?.status === 'approved' ||
-      body?.status === 'paid';
+      body?.status === 'paid' ||
+      body?.status === 'pago';
 
     if (!aprovado) {
       console.log(`Evento ignorado: ${evento}`);
@@ -89,7 +107,7 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ ok: false, msg: 'Email não encontrado' });
     }
 
-    const { tipo, dias, ofertaNome } = detectarPlano(body);
+    const { tipo, dias } = detectarPlano(body);
     const dataExpiracao = calcularExpiracao(dias);
 
     let uid;
@@ -111,7 +129,6 @@ app.post('/webhook', async (req, res) => {
       email,
       ativo: true,
       plano: tipo,
-      ofertaNome,
       dataExpiracao,
       criadoEm: new Date().toISOString(),
     }, { merge: true });
