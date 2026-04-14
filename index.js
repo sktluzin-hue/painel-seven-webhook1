@@ -199,10 +199,90 @@ app.post('/webhook-sunize', async (req, res) => {
   }
 });
 
+// ===== PUSH NOTIFICATIONS =====
+app.post('/send-push', async (req, res) => {
+  try {
+    const { titulo, corpo, link, tokens } = req.body;
+
+    if (!tokens || tokens.length === 0) {
+      return res.status(200).json({ ok: false, error: 'Nenhum token fornecido' });
+    }
+
+    console.log(`Enviando push para ${tokens.length} tokens...`);
+
+    // Get access token for FCM V1
+    const { GoogleAuth } = await import('google-auth-library');
+    const auth = new GoogleAuth({
+      credentials: serviceAccount,
+      scopes: ['https://www.googleapis.com/auth/firebase.messaging'],
+    });
+    const client = await auth.getClient();
+    const accessToken = (await client.getAccessToken()).token;
+
+    const projectId = serviceAccount.project_id;
+    const fcmUrl = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
+
+    let enviados = 0;
+    let erros = 0;
+
+    // Send to each token (FCM V1 sends one at a time)
+    for (const token of tokens) {
+      try {
+        const message = {
+          message: {
+            token,
+            notification: {
+              title: titulo,
+              body: corpo,
+            },
+            webpush: {
+              notification: {
+                title: titulo,
+                body: corpo,
+                icon: 'https://comforting-cupcake-b3214d.netlify.app/favicon.ico',
+                click_action: link || 'https://comforting-cupcake-b3214d.netlify.app/',
+              },
+              fcm_options: {
+                link: link || 'https://comforting-cupcake-b3214d.netlify.app/',
+              },
+            },
+          },
+        };
+
+        const response = await fetch(fcmUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(message),
+        });
+
+        if (response.ok) {
+          enviados++;
+        } else {
+          erros++;
+          const err = await response.json();
+          console.log(`Erro token ${token.slice(0,20)}...: ${JSON.stringify(err)}`);
+        }
+      } catch (e) {
+        erros++;
+      }
+    }
+
+    console.log(`✅ Push enviado: ${enviados} ok, ${erros} erros`);
+    return res.status(200).json({ ok: true, enviados, erros });
+
+  } catch (err) {
+    console.error('Erro send-push:', err.message);
+    return res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // ===== HEALTH CHECK =====
 app.get('/', (req, res) => res.json({
   status: 'Painel Seven Webhook ativo ✅',
-  endpoints: ['/webhook (Lowify)', '/webhook-sunize (Sunize)']
+  endpoints: ['/webhook (Lowify)', '/webhook-sunize (Sunize)', '/send-push (Push Notifications)']
 }));
 
 const PORT = process.env.PORT || 3000;
