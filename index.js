@@ -56,10 +56,10 @@ function detectarPlanoLowify(body) {
 
 function detectarPlanoSunize(body) {
   const oferta = (
+    body?.corpo?.Produto?.nome_do_produto ||
     body?.body?.Product?.product_name ||
     body?.offer?.name || body?.plan?.name || body?.product?.name ||
-    body?.order?.plan_name || body?.subscription?.plan?.name ||
-    body?.data?.offer?.name || body?.data?.product?.name || ''
+    body?.order?.plan_name || ''
   ).toLowerCase();
   console.log(`Sunize - oferta: "${oferta}"`);
   if (oferta.includes('7 dia') || oferta.includes('semanal') || oferta.includes('weekly')) return { tipo: 'semanal', dias: 7 };
@@ -154,26 +154,30 @@ app.post('/webhook-sunize', async (req, res) => {
       return res.status(200).json({ ok: false, msg: 'Token inválido' });
     }
 
-    // Extrai email — Sunize envia dentro de body.body.Customer.email
+    // Extrai email — Sunize envia dentro de corpo.Cliente["e-mail"]
     const email =
+      body?.corpo?.Cliente?.['e-mail'] ||
+      body?.corpo?.Cliente?.email ||
       body?.body?.Customer?.email ||
       body?.body?.customer?.email ||
-      body?.customer?.email || body?.buyer?.email || body?.client?.email ||
-      body?.email || body?.order?.customer?.email || body?.data?.customer?.email;
+      body?.customer?.email || body?.buyer?.email ||
+      body?.email;
 
     console.log(`Email Sunize: ${email}`);
 
-    // Extrai evento — Sunize envia como "SALE_APPROVED"
-    const evento = body?.event || body?.type || body?.status ||
-      body?.body?.order_status || body?.data?.event || '';
+    // Extrai evento — Sunize envia como "VENDA_APROVADA" ou "SALE_APPROVED"
+    const evento = body?.evento || body?.event || body?.type ||
+      body?.status || body?.corpo?.order_status || '';
     console.log(`Evento Sunize: ${evento}`);
 
     const aprovado =
-      evento === 'SALE_APPROVED' || evento === 'order.paid' ||
-      evento === 'purchase.approved' || evento === 'sale.approved' ||
-      evento === 'payment.approved' || evento === 'compra_aprovada' ||
-      evento === 'approved' || evento?.toLowerCase().includes('approv') ||
-      evento?.toLowerCase().includes('paid') || evento?.toLowerCase().includes('pago');
+      evento === 'VENDA_APROVADA' || evento === 'SALE_APPROVED' ||
+      evento === 'order.paid' || evento === 'purchase.approved' ||
+      evento === 'sale.approved' || evento === 'payment.approved' ||
+      evento === 'compra_aprovada' || evento === 'approved' ||
+      evento?.toLowerCase().includes('approv') ||
+      evento?.toLowerCase().includes('paid') ||
+      evento?.toLowerCase().includes('aprovad');
 
     if (!email) {
       console.log('⚠️ Email não encontrado no payload Sunize');
