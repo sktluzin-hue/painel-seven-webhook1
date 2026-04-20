@@ -203,8 +203,12 @@ app.post('/webhook-sunize', async (req, res) => {
 const WIAPY_TOKEN = 'painelseven7';
 
 function detectarPlanoWiapy(body) {
+  // Payload em português — campos com acento
   const titulo = (
+    body?.['Confira']?.['título'] ||
+    body?.checkout?.title ||
     body?.data?.checkout?.title ||
+    body?.produtos?.[0]?.['título'] ||
     body?.data?.products?.[0]?.title || ''
   ).toLowerCase();
 
@@ -212,7 +216,7 @@ function detectarPlanoWiapy(body) {
 
   if (titulo.includes('7 dia') || titulo.includes('semanal')) return { tipo: 'semanal', dias: 7 };
   if (titulo.includes('30 dia') || titulo.includes('mensal')) return { tipo: 'mensal', dias: 30 };
-  if (titulo.includes('vitalicio') || titulo.includes('vitalício')) return { tipo: 'vitalicio', dias: null };
+  if (titulo.includes('vitalicio') || titulo.includes('vitalício') || titulo.includes('vitalic')) return { tipo: 'vitalicio', dias: null };
 
   console.log('⚠️ Wiapy - plano não detectado, aplicando vitalício por padrão');
   return { tipo: 'vitalicio', dias: null };
@@ -232,13 +236,24 @@ app.post('/webhook-wiapy', async (req, res) => {
       return res.status(200).json({ ok: false, msg: 'Token inválido' });
     }
 
-    const email = body?.data?.customer?.email;
+    // Email — payload em português usa "e-mail" com hífen
+    const email =
+      body?.cliente?.['e-mail'] ||
+      body?.cliente?.email ||
+      body?.data?.customer?.email ||
+      body?.customer?.email;
     console.log(`Email Wiapy: ${email}`);
 
-    const status = body?.data?.payment?.status || '';
+    // Status — payload em português usa "pago"
+    const status = (
+      body?.pagamento?.status ||
+      body?.data?.payment?.status || ''
+    ).toLowerCase();
     console.log(`Status Wiapy: ${status}`);
 
-    if (status !== 'paid') {
+    const aprovado = status === 'pago' || status === 'paid' || status === 'aprovado' || status === 'approved';
+
+    if (!aprovado) {
       console.log(`Evento Wiapy ignorado: ${status}`);
       return res.status(200).json({ ok: false, msg: `Status ignorado: ${status}` });
     }
