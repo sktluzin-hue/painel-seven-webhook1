@@ -10,29 +10,24 @@ admin.initializeApp({
 const auth = admin.auth();
 const db = admin.firestore();
 const app = express();
-// Captura body raw para lidar com JSON inválido da Wiapy
+
+// Raw body parser — captura texto antes de processar
+// Necessário para lidar com JSON inválido da Wiapy (usa "nulo" em vez de null)
 app.use((req, res, next) => {
   let data = '';
   req.on('data', chunk => { data += chunk; });
   req.on('end', () => {
     req.rawBody = data;
     try {
-      // Tenta parse normal primeiro
       req.body = JSON.parse(data);
     } catch(e) {
       try {
-        // Wiapy envia JSON inválido: "nulo" em vez de null, vírgulas faltando
-        // Corrige e tenta parsear novamente
         const fixed = data
           .replace(/:\s*nulo/g, ': null')
           .replace(/:\s*verdadeiro/g, ': true')
-          .replace(/:\s*falso/g, ': false')
-          .replace(/"\s*
-\s*"/g, '",\n  "'); // vírgulas faltando entre campos
+          .replace(/:\s*falso/g, ': false');
         req.body = JSON.parse(fixed);
       } catch(e2) {
-        // Se ainda falhar, usa objeto vazio mas loga o raw
-        console.log('⚠️ JSON inválido recebido, usando raw body');
         req.body = {};
         req.bodyParseError = e2.message;
       }
@@ -43,6 +38,7 @@ app.use((req, res, next) => {
 
 // ===== CONFIGURAÇÃO =====
 const SUNIZE_TOKEN = 'painel7sunize2026';
+const WIAPY_TOKEN = 'painelseven7';
 
 const PLANOS_POR_ID = {
   '32851': { tipo: 'semanal',   dias: 7    },
@@ -91,10 +87,38 @@ function detectarPlanoSunize(body) {
     body?.order?.plan_name || ''
   ).toLowerCase();
   console.log(`Sunize - oferta: "${oferta}"`);
-  if (oferta.includes('7 dia') || oferta.includes('semanal') || oferta.includes('weekly')) return { tipo: 'semanal', dias: 7 };
-  if (oferta.includes('30 dia') || oferta.includes('mensal') || oferta.includes('monthly')) return { tipo: 'mensal', dias: 30 };
-  if (oferta.includes('vitalicio') || oferta.includes('vitalício') || oferta.includes('lifetime')) return { tipo: 'vitalicio', dias: null };
+  if (oferta.includes('7 dia') || oferta.includes('semanal')) return { tipo: 'semanal', dias: 7 };
+  if (oferta.includes('30 dia') || oferta.includes('mensal')) return { tipo: 'mensal', dias: 30 };
+  if (oferta.includes('vitalicio') || oferta.includes('vitalício')) return { tipo: 'vitalicio', dias: null };
   console.log('⚠️ Sunize - plano não detectado, aplicando vitalício por padrão');
+  return { tipo: 'vitalicio', dias: null };
+}
+
+function detectarPlanoWiapy(body, rawBody) {
+  // Tenta do body parseado
+  const titulo1 = (
+    body?.['Confira']?.['título'] ||
+    body?.checkout?.title ||
+    body?.data?.checkout?.title ||
+    body?.produtos?.[0]?.['título'] ||
+    body?.data?.products?.[0]?.title || ''
+  ).toLowerCase();
+
+  // Tenta do rawBody via regex
+  let titulo2 = '';
+  if (rawBody) {
+    const m = rawBody.match(/"t[íi]tulo"\s*:\s*"([^"]+)"/);
+    titulo2 = (m?.[1] || '').toLowerCase();
+  }
+
+  const titulo = titulo1 || titulo2;
+  console.log(`Wiapy - título: "${titulo}"`);
+
+  if (titulo.includes('7 dia') || titulo.includes('semanal')) return { tipo: 'semanal', dias: 7 };
+  if (titulo.includes('30 dia') || titulo.includes('mensal')) return { tipo: 'mensal', dias: 30 };
+  if (titulo.includes('vitalicio') || titulo.includes('vitalício') || titulo.includes('vitalic')) return { tipo: 'vitalicio', dias: null };
+
+  console.log('⚠️ Wiapy - plano não detectado, aplicando vitalício por padrão');
   return { tipo: 'vitalicio', dias: null };
 }
 
@@ -167,52 +191,36 @@ app.post('/webhook-sunize', async (req, res) => {
     console.log('=== SUNIZE Webhook recebido ===');
     console.log(JSON.stringify(body, null, 2));
 
-    // Validação do token (aceita em vários lugares)
     const tokenRecebido =
       req.headers['x-webhook-token'] ||
       req.headers['x-token'] ||
       req.headers['authorization']?.replace('Bearer ', '') ||
-      body?.token ||
-      req.query?.token;
-
+      body?.token || req.query?.token;
     console.log(`Token recebido: "${tokenRecebido}"`);
 
     if (tokenRecebido !== SUNIZE_TOKEN) {
       console.log('❌ Token inválido');
-      // Retorna 200 mesmo assim para não causar reenvios, mas não processa
       return res.status(200).json({ ok: false, msg: 'Token inválido' });
     }
 
-    // Extrai email — Sunize envia dentro de corpo.Cliente["e-mail"]
     const email =
       body?.corpo?.Cliente?.['e-mail'] ||
       body?.corpo?.Cliente?.email ||
       body?.body?.Customer?.email ||
-      body?.body?.customer?.email ||
-      body?.customer?.email || body?.buyer?.email ||
-      body?.email;
-
+      body?.customer?.email || body?.buyer?.email || body?.email;
     console.log(`Email Sunize: ${email}`);
 
-    // Extrai evento — Sunize envia como "VENDA_APROVADA" ou "SALE_APPROVED"
-    const evento = body?.evento || body?.event || body?.type ||
-      body?.status || body?.corpo?.order_status || '';
+    const evento = body?.evento || body?.event || body?.type || body?.status || '';
     console.log(`Evento Sunize: ${evento}`);
 
     const aprovado =
       evento === 'VENDA_APROVADA' || evento === 'SALE_APPROVED' ||
       evento === 'order.paid' || evento === 'purchase.approved' ||
-      evento === 'sale.approved' || evento === 'payment.approved' ||
       evento === 'compra_aprovada' || evento === 'approved' ||
       evento?.toLowerCase().includes('approv') ||
-      evento?.toLowerCase().includes('paid') ||
       evento?.toLowerCase().includes('aprovad');
 
-    if (!email) {
-      console.log('⚠️ Email não encontrado no payload Sunize');
-      return res.status(200).json({ ok: false, msg: 'Email não encontrado' });
-    }
-
+    if (!email) return res.status(200).json({ ok: false, msg: 'Email não encontrado' });
     if (!aprovado) {
       console.log(`Evento Sunize ignorado: ${evento}`);
       return res.status(200).json({ ok: false, msg: `Evento ignorado: ${evento}` });
@@ -229,37 +237,10 @@ app.post('/webhook-sunize', async (req, res) => {
 });
 
 // ===== WEBHOOK WIAPY =====
-const WIAPY_TOKEN = 'painelseven7';
-
-function detectarPlanoWiapy(body) {
-  // Payload em português — campos com acento
-  const titulo = (
-    body?.['Confira']?.['título'] ||
-    body?.checkout?.title ||
-    body?.data?.checkout?.title ||
-    body?.produtos?.[0]?.['título'] ||
-    body?.data?.products?.[0]?.title || ''
-  ).toLowerCase();
-
-  console.log(`Wiapy - título do checkout: "${titulo}"`);
-
-  if (titulo.includes('7 dia') || titulo.includes('semanal')) return { tipo: 'semanal', dias: 7 };
-  if (titulo.includes('30 dia') || titulo.includes('mensal')) return { tipo: 'mensal', dias: 30 };
-  if (titulo.includes('vitalicio') || titulo.includes('vitalício') || titulo.includes('vitalic')) return { tipo: 'vitalicio', dias: null };
-
-  console.log('⚠️ Wiapy - plano não detectado, aplicando vitalício por padrão');
-  return { tipo: 'vitalicio', dias: null };
-}
-
-app.post('/webhook-wiapy', express.text({ type: '*/*' }), async (req, res) => {
+app.post('/webhook-wiapy', async (req, res) => {
   try {
-    // Usa o body já parseado pelo middleware (que corrige JSON inválido da Wiapy)
     const body = req.body;
-    if (req.bodyParseError) {
-      console.log('⚠️ Body parse error:', req.bodyParseError);
-      console.log('Raw body:', req.rawBody?.slice(0, 500));
-    }
-
+    const rawBody = req.rawBody || '';
     console.log('=== WIAPY Webhook recebido ===');
     console.log(JSON.stringify(body, null, 2));
 
@@ -271,41 +252,41 @@ app.post('/webhook-wiapy', express.text({ type: '*/*' }), async (req, res) => {
       return res.status(200).json({ ok: false, msg: 'Token inválido' });
     }
 
-    // Email — usa "e-mail" com hífen
+    // Email
     const cliente = body?.cliente || {};
-    const email = cliente['e-mail'] || cliente.email ||
-      body?.data?.customer?.email || body?.customer?.email;
+    let email = cliente['e-mail'] || cliente.email || body?.data?.customer?.email;
+    if (!email && rawBody) {
+      const m = rawBody.match(/"e-mail"\s*:\s*"([^"]+)"/);
+      email = m?.[1] || '';
+    }
     console.log(`Email Wiapy: ${email}`);
 
-    // Status — tenta do body parseado primeiro, fallback no rawBody
+    // Status
     let status = (body?.pagamento?.status || '').toLowerCase();
-    let pagamentoId = body?.pagamento?.id || '';
-
-    // Se falhou, extrai do rawBody via regex
-    if (!status && req.rawBody) {
-      const statusMatch = req.rawBody.match(/"status"\s*:\s*"([^"]+)"/);
-      status = (statusMatch?.[1] || '').toLowerCase();
-      const idMatch = req.rawBody.match(/"pagamento"[\s\S]*?"id"\s*:\s*"([^"]+)"/);
-      pagamentoId = idMatch?.[1] || '';
+    if (!status && rawBody) {
+      const m = rawBody.match(/"status"\s*:\s*"([^"]+)"/);
+      status = (m?.[1] || '').toLowerCase();
     }
+    console.log(`Status Wiapy: "${status}"`);
 
-    console.log(`Status Wiapy: "${status}" | ID: "${pagamentoId}"`);
+    // ID do pagamento como fallback
+    let pagamentoId = body?.pagamento?.id || '';
+    if (!pagamentoId && rawBody) {
+      const m = rawBody.match(/"pagamento"[\s\S]{0,50}"id"\s*:\s*"([^"]+)"/);
+      pagamentoId = m?.[1] || '';
+    }
 
     const aprovado = status === 'pago' || status === 'paid' ||
       status === 'aprovado' || status === 'approved' ||
       (pagamentoId && !status);
 
+    if (!email) return res.status(200).json({ ok: false, msg: 'Email não encontrado' });
     if (!aprovado) {
-      console.log(`Evento Wiapy ignorado: ${status}`);
+      console.log(`Evento Wiapy ignorado: status="${status}"`);
       return res.status(200).json({ ok: false, msg: `Status ignorado: ${status}` });
     }
 
-    if (!email) {
-      console.log('⚠️ Email não encontrado no payload Wiapy');
-      return res.status(200).json({ ok: false, msg: 'Email não encontrado' });
-    }
-
-    const { tipo, dias } = detectarPlanoWiapy(body);
+    const { tipo, dias } = detectarPlanoWiapy(body, rawBody);
     await cadastrarOuAtualizar(email, tipo, dias);
     return res.status(200).json({ ok: true, email, plano: tipo });
 
@@ -319,76 +300,45 @@ app.post('/webhook-wiapy', express.text({ type: '*/*' }), async (req, res) => {
 app.post('/send-push', async (req, res) => {
   try {
     const { titulo, corpo, link, tokens } = req.body;
-
     if (!tokens || tokens.length === 0) {
       return res.status(200).json({ ok: false, error: 'Nenhum token fornecido' });
     }
-
     console.log(`Enviando push para ${tokens.length} tokens...`);
-
-    // Get access token for FCM V1
     const { GoogleAuth } = await import('google-auth-library');
-    const auth = new GoogleAuth({
+    const gauth = new GoogleAuth({
       credentials: serviceAccount,
       scopes: ['https://www.googleapis.com/auth/firebase.messaging'],
     });
-    const client = await auth.getClient();
+    const client = await gauth.getClient();
     const accessToken = (await client.getAccessToken()).token;
-
     const projectId = serviceAccount.project_id;
     const fcmUrl = `https://fcm.googleapis.com/v1/projects/${projectId}/messages:send`;
-
-    let enviados = 0;
-    let erros = 0;
-
-    // Send to each token (FCM V1 sends one at a time)
+    let enviados = 0, erros = 0;
     for (const token of tokens) {
       try {
         const message = {
           message: {
             token,
-            notification: {
-              title: titulo,
-              body: corpo,
-            },
+            notification: { title: titulo, body: corpo },
             webpush: {
               notification: {
-                title: titulo,
-                body: corpo,
+                title: titulo, body: corpo,
                 icon: 'https://comforting-cupcake-b3214d.netlify.app/favicon.ico',
-                click_action: link || 'https://comforting-cupcake-b3214d.netlify.app/',
               },
-              fcm_options: {
-                link: link || 'https://comforting-cupcake-b3214d.netlify.app/',
-              },
+              fcm_options: { link: link || 'https://comforting-cupcake-b3214d.netlify.app/' },
             },
           },
         };
-
         const response = await fetch(fcmUrl, {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${accessToken}`,
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify(message),
         });
-
-        if (response.ok) {
-          enviados++;
-        } else {
-          erros++;
-          const err = await response.json();
-          console.log(`Erro token ${token.slice(0,20)}...: ${JSON.stringify(err)}`);
-        }
-      } catch (e) {
-        erros++;
-      }
+        if (response.ok) { enviados++; } else { erros++; }
+      } catch (e) { erros++; }
     }
-
     console.log(`✅ Push enviado: ${enviados} ok, ${erros} erros`);
     return res.status(200).json({ ok: true, enviados, erros });
-
   } catch (err) {
     console.error('Erro send-push:', err.message);
     return res.status(500).json({ ok: false, error: err.message });
@@ -398,7 +348,7 @@ app.post('/send-push', async (req, res) => {
 // ===== HEALTH CHECK =====
 app.get('/', (req, res) => res.json({
   status: 'Painel Seven Webhook ativo ✅',
-  endpoints: ['/webhook (Lowify)', '/webhook-sunize (Sunize)', '/webhook-wiapy (Wiapy)', '/send-push (Push Notifications)']
+  endpoints: ['/webhook (Lowify)', '/webhook-sunize (Sunize)', '/webhook-wiapy (Wiapy)', '/send-push (Push)']
 }));
 
 const PORT = process.env.PORT || 3000;
