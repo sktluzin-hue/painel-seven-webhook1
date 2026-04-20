@@ -252,12 +252,27 @@ app.post('/webhook-wiapy', async (req, res) => {
       return res.status(200).json({ ok: false, msg: 'Token inválido' });
     }
 
-    // Email
-    const cliente = body?.cliente || {};
-    let email = cliente['e-mail'] || cliente.email || body?.data?.customer?.email;
-    if (!email && rawBody) {
-      const m = rawBody.match(/"e-mail"\s*:\s*"([^"]+)"/);
-      email = m?.[1] || '';
+    // Email — extrai sempre do rawBody pois JSON inválido quebra o parse parcial
+    let email = '';
+    if (rawBody) {
+      // Tenta campo "e-mail" (com hífen)
+      const m1 = rawBody.match(/"e-mail"[^:]*:[^"]*"([^"@]+@[^"]+)"/);
+      if (m1) email = m1[1];
+      // Fallback: qualquer campo email
+      if (!email) {
+        const m2 = rawBody.match(/"email"[^:]*:[^"]*"([^"@]+@[^"]+)"/);
+        if (m2) email = m2[1];
+      }
+      // Fallback: busca qualquer endereço de email no rawBody
+      if (!email) {
+        const m3 = rawBody.match(/([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/);
+        if (m3) email = m3[1];
+      }
+    }
+    // Tenta também do body parseado
+    if (!email) {
+      const cliente = body?.cliente || {};
+      email = cliente['e-mail'] || cliente.email || body?.data?.customer?.email || '';
     }
     console.log(`Email Wiapy: ${email}`);
 
