@@ -222,9 +222,17 @@ function detectarPlanoWiapy(body) {
   return { tipo: 'vitalicio', dias: null };
 }
 
-app.post('/webhook-wiapy', async (req, res) => {
+app.post('/webhook-wiapy', express.text({ type: '*/*' }), async (req, res) => {
   try {
-    const body = req.body;
+    // Parse manual para lidar com campos especiais do JSON da Wiapy
+    let body;
+    try {
+      const raw = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      body = JSON.parse(raw);
+    } catch(e) {
+      body = req.body;
+    }
+
     console.log('=== WIAPY Webhook recebido ===');
     console.log(JSON.stringify(body, null, 2));
 
@@ -236,25 +244,23 @@ app.post('/webhook-wiapy', async (req, res) => {
       return res.status(200).json({ ok: false, msg: 'Token inválido' });
     }
 
-    // Email — payload em português usa "e-mail" com hífen
-    const email =
-      body?.cliente?.['e-mail'] ||
-      body?.cliente?.email ||
-      body?.data?.customer?.email ||
-      body?.customer?.email;
+    // Email — usa "e-mail" com hífen
+    const cliente = body?.cliente || {};
+    const email = cliente['e-mail'] || cliente.email ||
+      body?.data?.customer?.email || body?.customer?.email;
     console.log(`Email Wiapy: ${email}`);
 
-    // Status — payload em português usa "pago"
-    // Acessa diretamente pois o campo "pagamento" pode ter chaves com caracteres especiais
-    const pagamento = body?.pagamento || body?.data?.payment || {};
-    const status = (pagamento?.status || pagamento?.['status'] || '').toLowerCase();
-    console.log(`Status Wiapy: "${status}"`);
-    console.log(`Pagamento obj:`, JSON.stringify(pagamento));
+    // Status — serializa o objeto pagamento para string e extrai o status
+    const pagamentoRaw = JSON.stringify(body?.pagamento || {});
+    console.log(`Pagamento raw: ${pagamentoRaw}`);
+    const statusMatch = pagamentoRaw.match(/"status"\s*:\s*"([^"]+)"/);
+    const status = (statusMatch?.[1] || '').toLowerCase();
+    const pagamentoId = (pagamentoRaw.match(/"id"\s*:\s*"([^"]+)"/) || [])[1] || '';
+    console.log(`Status Wiapy: "${status}" | ID: "${pagamentoId}"`);
 
-    // Aprovado se status for pago/paid OU se o objeto pagamento existir e tiver id (compra real)
-    const aprovado = status === 'pago' || status === 'paid' || 
+    const aprovado = status === 'pago' || status === 'paid' ||
       status === 'aprovado' || status === 'approved' ||
-      (pagamento?.id && !status); // fallback: se tem ID mas status veio vazio, considera aprovado
+      (pagamentoId && !status);
 
     if (!aprovado) {
       console.log(`Evento Wiapy ignorado: ${status}`);
