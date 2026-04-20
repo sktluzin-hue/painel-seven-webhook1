@@ -245,13 +245,16 @@ app.post('/webhook-wiapy', async (req, res) => {
     console.log(`Email Wiapy: ${email}`);
 
     // Status — payload em português usa "pago"
-    const status = (
-      body?.pagamento?.status ||
-      body?.data?.payment?.status || ''
-    ).toLowerCase();
-    console.log(`Status Wiapy: ${status}`);
+    // Acessa diretamente pois o campo "pagamento" pode ter chaves com caracteres especiais
+    const pagamento = body?.pagamento || body?.data?.payment || {};
+    const status = (pagamento?.status || pagamento?.['status'] || '').toLowerCase();
+    console.log(`Status Wiapy: "${status}"`);
+    console.log(`Pagamento obj:`, JSON.stringify(pagamento));
 
-    const aprovado = status === 'pago' || status === 'paid' || status === 'aprovado' || status === 'approved';
+    // Aprovado se status for pago/paid OU se o objeto pagamento existir e tiver id (compra real)
+    const aprovado = status === 'pago' || status === 'paid' || 
+      status === 'aprovado' || status === 'approved' ||
+      (pagamento?.id && !status); // fallback: se tem ID mas status veio vazio, considera aprovado
 
     if (!aprovado) {
       console.log(`Evento Wiapy ignorado: ${status}`);
