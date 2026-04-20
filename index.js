@@ -10,7 +10,36 @@ admin.initializeApp({
 const auth = admin.auth();
 const db = admin.firestore();
 const app = express();
-app.use(express.json());
+// Captura body raw para lidar com JSON inválido da Wiapy
+app.use((req, res, next) => {
+  let data = '';
+  req.on('data', chunk => { data += chunk; });
+  req.on('end', () => {
+    req.rawBody = data;
+    try {
+      // Tenta parse normal primeiro
+      req.body = JSON.parse(data);
+    } catch(e) {
+      try {
+        // Wiapy envia JSON inválido: "nulo" em vez de null, vírgulas faltando
+        // Corrige e tenta parsear novamente
+        const fixed = data
+          .replace(/:\s*nulo/g, ': null')
+          .replace(/:\s*verdadeiro/g, ': true')
+          .replace(/:\s*falso/g, ': false')
+          .replace(/"\s*
+\s*"/g, '",\n  "'); // vírgulas faltando entre campos
+        req.body = JSON.parse(fixed);
+      } catch(e2) {
+        // Se ainda falhar, usa objeto vazio mas loga o raw
+        console.log('⚠️ JSON inválido recebido, usando raw body');
+        req.body = {};
+        req.bodyParseError = e2.message;
+      }
+    }
+    next();
+  });
+});
 
 // ===== CONFIGURAÇÃO =====
 const SUNIZE_TOKEN = 'painel7sunize2026';
@@ -224,13 +253,11 @@ function detectarPlanoWiapy(body) {
 
 app.post('/webhook-wiapy', express.text({ type: '*/*' }), async (req, res) => {
   try {
-    // Parse manual para lidar com campos especiais do JSON da Wiapy
-    let body;
-    try {
-      const raw = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
-      body = JSON.parse(raw);
-    } catch(e) {
-      body = req.body;
+    // Usa o body já parseado pelo middleware (que corrige JSON inválido da Wiapy)
+    const body = req.body;
+    if (req.bodyParseError) {
+      console.log('⚠️ Body parse error:', req.bodyParseError);
+      console.log('Raw body:', req.rawBody?.slice(0, 500));
     }
 
     console.log('=== WIAPY Webhook recebido ===');
@@ -250,12 +277,18 @@ app.post('/webhook-wiapy', express.text({ type: '*/*' }), async (req, res) => {
       body?.data?.customer?.email || body?.customer?.email;
     console.log(`Email Wiapy: ${email}`);
 
-    // Status — serializa o objeto pagamento para string e extrai o status
-    const pagamentoRaw = JSON.stringify(body?.pagamento || {});
-    console.log(`Pagamento raw: ${pagamentoRaw}`);
-    const statusMatch = pagamentoRaw.match(/"status"\s*:\s*"([^"]+)"/);
-    const status = (statusMatch?.[1] || '').toLowerCase();
-    const pagamentoId = (pagamentoRaw.match(/"id"\s*:\s*"([^"]+)"/) || [])[1] || '';
+    // Status — tenta do body parseado primeiro, fallback no rawBody
+    let status = (body?.pagamento?.status || '').toLowerCase();
+    let pagamentoId = body?.pagamento?.id || '';
+
+    // Se falhou, extrai do rawBody via regex
+    if (!status && req.rawBody) {
+      const statusMatch = req.rawBody.match(/"status"\s*:\s*"([^"]+)"/);
+      status = (statusMatch?.[1] || '').toLowerCase();
+      const idMatch = req.rawBody.match(/"pagamento"[\s\S]*?"id"\s*:\s*"([^"]+)"/);
+      pagamentoId = idMatch?.[1] || '';
+    }
+
     console.log(`Status Wiapy: "${status}" | ID: "${pagamentoId}"`);
 
     const aprovado = status === 'pago' || status === 'paid' ||
